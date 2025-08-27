@@ -19,7 +19,6 @@ RUN dnf update -y && \
         diffutils \
         make \
         rpm-build \
-        yasm-devel \
         glibc-devel \
         libstdc++-devel \
         zlib-devel \
@@ -29,6 +28,17 @@ RUN dnf update -y && \
         unixODBC-devel \
         libuuid-devel \
         libzstd-devel && \
+    dnf clean all
+
+# Add AlmaLinux devel repository for additional packages like yasm
+RUN echo '[almalinux-devel]' > /etc/yum.repos.d/almalinux-devel.repo && \
+    echo 'name=AlmaLinux $releasever - Devel' >> /etc/yum.repos.d/almalinux-devel.repo && \
+    echo 'baseurl=https://repo.almalinux.org/almalinux/9/devel/x86_64/os/' >> /etc/yum.repos.d/almalinux-devel.repo && \
+    echo 'enabled=1' >> /etc/yum.repos.d/almalinux-devel.repo && \
+    echo 'gpgcheck=0' >> /etc/yum.repos.d/almalinux-devel.repo
+
+# Install yasm from AlmaLinux devel repo
+RUN dnf install -y yasm && \
     dnf clean all
 
 # Install newer CMake (ClickHouse requires >= 3.20)
