@@ -82,6 +82,7 @@ RUN mkdir -p /clickhouse-source/build && \
         -DENABLE_UTILS=ON \
         -DENABLE_THINLTO=OFF \
         -DWERROR=OFF \
+        -DCOMPILER_CACHE=disabled \
         -DCMAKE_C_COMPILER=clang \
         -DCMAKE_CXX_COMPILER=clang++ \
         -GNinja && \
