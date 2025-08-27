@@ -3,7 +3,7 @@ FROM registry.access.redhat.com/ubi9/ubi:latest AS builder
 
 # Install build dependencies
 RUN dnf update -y && \
-    dnf install -y \
+    dnf install -y --allowerasing \
         git \
         cmake \
         ninja-build \
