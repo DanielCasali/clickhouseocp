@@ -68,7 +68,7 @@ RUN echo "Checking nasm-rdoff package contents:" && \
     which nasm && \
     /usr/bin/nasm --version
 
-# Install newer CMake (ClickHouse requires >= 3.31, using 3.31.7 for CMP0177 policy support)
+# Install newer CMake (ClickHouse requires >= 3.20, using 3.31.7 for CMP0177 policy support)
 RUN cd /tmp && \
     wget https://github.com/Kitware/CMake/releases/download/v3.31.7/cmake-3.31.7-linux-x86_64.tar.gz && \
     tar -xzf cmake-3.31.7-linux-x86_64.tar.gz && \
@@ -113,8 +113,6 @@ RUN mkdir -p /clickhouse-source/build && \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -DENABLE_TESTS=OFF \
         -DENABLE_EXAMPLES=OFF \
-        -DUSE_STATIC_LIBRARIES=ON \
-        -DSPLIT_SHARED_LIBRARIES=OFF \
         -DENABLE_FUZZING=OFF \
         -DENABLE_UTILS=ON \
         -DENABLE_THINLTO=OFF \
@@ -123,7 +121,10 @@ RUN mkdir -p /clickhouse-source/build && \
         -DCMAKE_C_COMPILER=clang \
         -DCMAKE_CXX_COMPILER=clang++ \
         -GNinja && \
-    ninja clickhouse-server clickhouse-client
+    echo "Available targets:" && \
+    ninja -t targets | head -20 && \
+    echo "Building ClickHouse..." && \
+    ninja clickhouse || ninja clickhouse-server clickhouse-client || ninja all
 
 # Create installation directory
 RUN mkdir -p /clickhouse-install/usr/bin && \
