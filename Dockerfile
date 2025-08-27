@@ -68,13 +68,15 @@ RUN echo "Checking nasm-rdoff package contents:" && \
     which nasm && \
     /usr/bin/nasm --version
 
-# Install newer CMake (ClickHouse requires >= 3.20)
+# Install newer CMake (ClickHouse requires >= 3.31, using 3.31.7 for CMP0177 policy support)
 RUN cd /tmp && \
-    wget https://github.com/Kitware/CMake/releases/download/v3.28.1/cmake-3.28.1-linux-x86_64.tar.gz && \
-    tar -xzf cmake-3.28.1-linux-x86_64.tar.gz && \
-    cp -r cmake-3.28.1-linux-x86_64/* /usr/local/ && \
-    rm -rf cmake-3.28.1* && \
-    ln -sf /usr/local/bin/cmake /usr/bin/cmake
+    wget https://github.com/Kitware/CMake/releases/download/v3.31.7/cmake-3.31.7-linux-x86_64.tar.gz && \
+    tar -xzf cmake-3.31.7-linux-x86_64.tar.gz && \
+    cp -r cmake-3.31.7-linux-x86_64/* /usr/local/ && \
+    rm -rf cmake-3.31.7* && \
+    ln -sf /usr/local/bin/cmake /usr/bin/cmake && \
+    echo "Installed CMake version:" && \
+    cmake --version
 
 # Install Clang from AlmaLinux AppStream repository (Clang 16)
 RUN dnf install -y --allowerasing \
