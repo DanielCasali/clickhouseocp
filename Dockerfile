@@ -13,7 +13,7 @@ ARG VERSION="25.7.4.11"
 ARG PACKAGES="clickhouse-client clickhouse-server clickhouse-common-static"
 
 # Create clickhouse user/group with fixed uid/gid for OpenShift compatibility
-# Important: We create the user but will make everything group-writable for OpenShift
+# Important: Use GID 1001 and group 0 (root) for OpenShift
 RUN sed -i "s|http://archive.ubuntu.com|${apt_archive}|g" /etc/apt/sources.list \
     && groupadd -r clickhouse --gid=1001 \
     && useradd -r -g clickhouse --uid=1001 --home-dir=/var/lib/clickhouse --shell=/bin/bash clickhouse \
@@ -59,7 +59,7 @@ ENV LANG=en_US.UTF-8
 ENV TZ=UTC
 
 # Create default configuration for OpenShift
-RUN cat > /etc/clickhouse-server/config.d/docker_related_config.xml << 'EOF'
+RUN cat > /etc/clickhouse-server/config.d/docker_related_config.xml << 'XMLEOF'
 <yandex>
     <!-- Listen for connections from anywhere -->
     <listen_host>0.0.0.0</listen_host>
@@ -84,10 +84,10 @@ RUN cat > /etc/clickhouse-server/config.d/docker_related_config.xml << 'EOF'
         <level>information</level>
     </logger>
 </yandex>
-EOF
+XMLEOF
 
 # Create entrypoint script
-RUN cat > /entrypoint.sh << 'EOF'
+RUN cat > /entrypoint.sh << 'SCRIPTEOF'
 #!/bin/bash
 set -eo pipefail
 shopt -s nullglob
@@ -114,7 +114,7 @@ fi
 
 # if not root or not clickhouse-server, just exec the command
 exec "$@"
-EOF
+SCRIPTEOF
 
 # Install gosu for proper user switching (needed for entrypoint)
 RUN apt-get update \
