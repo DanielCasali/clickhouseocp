@@ -1,0 +1,623 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Simple OpenShift 4 cluster infrastructure on AWS - Internal Load Balancers
+
+Parameters:
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair for SSH access
+
+  ClusterName:
+    Type: String
+    Default: openshift
+    Description: Name of the OpenShift cluster
+
+  BaseDomain:
+    Type: String
+    Description: Base domain for the cluster (e.g., example.com)
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/24
+    Description: CIDR block for VPC
+
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.0.0.0/26
+    Description: CIDR block for single public subnet (NAT Gateway and Bastion only)
+
+  PrivateSubnetAZ1Cidr:
+    Type: String
+    Default: 10.0.0.64/26
+    Description: CIDR block for private subnet in AZ1
+
+  PrivateSubnetAZ2Cidr:
+    Type: String
+    Default: 10.0.0.128/26
+    Description: CIDR block for private subnet in AZ2
+
+  PrivateSubnetAZ3Cidr:
+    Type: String
+    Default: 10.0.0.192/26
+    Description: CIDR block for private subnet in AZ3
+
+Resources:
+  # VPC and Networking
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-igw
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-public-subnet
+
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetAZ1Cidr
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-private-subnet-az1
+
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetAZ2Cidr
+      AvailabilityZone: us-east-1b
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-private-subnet-az2
+
+  PrivateSubnetAZ3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetAZ3Cidr
+      AvailabilityZone: us-east-1c
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-private-subnet-az3
+
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-nat-eip
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-nat-gateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-public-rt
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-private-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnetRouteTableAssociationAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetRouteTableAssociationAZ2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ2
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetRouteTableAssociationAZ3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ3
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Security Groups
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for bastion host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-bastion-sg
+
+  # OpenShift Cluster Security Group (shared by all cluster nodes)
+  ClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for OpenShift cluster nodes
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 6443
+          ToPort: 6443
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22623
+          ToPort: 22623
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        # Allow all traffic within private subnets for cluster communication
+        - IpProtocol: -1
+          CidrIp: !Ref PrivateSubnetAZ1Cidr
+        - IpProtocol: -1
+          CidrIp: !Ref PrivateSubnetAZ2Cidr
+        - IpProtocol: -1
+          CidrIp: !Ref PrivateSubnetAZ3Cidr
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-cluster-sg
+
+  MasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Additional security group for OpenShift master nodes
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-sg
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Additional security group for OpenShift worker nodes
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-sg
+
+  BootstrapSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Additional security group for OpenShift bootstrap node
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-bootstrap-sg
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for load balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 10.0.0.0/24
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/24
+        - IpProtocol: tcp
+          FromPort: 6443
+          ToPort: 6443
+          CidrIp: 10.0.0.0/24
+        - IpProtocol: tcp
+          FromPort: 22623
+          ToPort: 22623
+          CidrIp: 10.0.0.0/24
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-lb-sg
+
+  # Application Load Balancer (internal-only) - handles all traffic
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${ClusterName}-alb
+      Scheme: internal
+      Type: application
+      Subnets:
+        - !Ref PrivateSubnetAZ1
+        - !Ref PrivateSubnetAZ2
+        - !Ref PrivateSubnetAZ3
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-alb
+
+  # Target Groups
+  APITargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-api-tg
+      Port: 6443
+      Protocol: HTTPS
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: TCP
+
+
+  MCSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-mcs-tg
+      Port: 22623
+      Protocol: HTTPS
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: TCP
+
+
+  HTTPTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-http-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: TCP
+
+
+  HTTPSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-https-tg
+      Port: 443
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: TCP
+
+
+  # Listeners
+  APIListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref APITargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 6443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref SSLCertificate
+
+  MCSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MCSTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 22623
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref SSLCertificate
+
+  HTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  HTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPSTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref SSLCertificate
+
+  # SSL Certificate (self-signed for demo - replace with ACM certificate)
+  SSLCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub '*.apps.${ClusterName}.${BaseDomain}'
+      ValidationMethod: DNS
+      SubjectAlternativeNames:
+        - !Sub api.${ClusterName}.${BaseDomain}
+
+  # Bastion Host
+  BastionEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-bastion-eip
+
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 200
+          VolumeType: "gp2"
+      ImageId: ami-0c02fb55956c7d316 # Amazon Linux 2 AMI (update as needed)
+      InstanceType: t2.medium
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-bastion
+
+  BastionEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref BastionHost
+      EIP: !Ref BastionEIP
+
+  # Bootstrap Node
+  BootstrapNode:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 200
+          VolumeType: "gp2"
+      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      InstanceType: t2.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ1
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref BootstrapSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-bootstrap
+
+  # Master Nodes
+  MasterNode1:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 200
+          VolumeType: "gp2"
+      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      InstanceType: t2.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ1
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref MasterSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-1
+
+  MasterNode2:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 200
+          VolumeType: "gp2"
+      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      InstanceType: t2.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ2
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref MasterSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-2
+
+  MasterNode3:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 200
+          VolumeType: "gp2"
+      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      InstanceType: t2.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ3
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref MasterSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-3
+
+  # Worker Nodes
+  WorkerNode1:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 300
+          VolumeType: "gp2"
+      - DeviceName: /dev/xvdb
+        Ebs:
+          VolumeSize: 500
+          VolumeType: "gp2"
+      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      InstanceType: t2.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ1
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref WorkerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-1
+
+  WorkerNode2:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 300
+          VolumeType: "gp2"
+      - DeviceName: /dev/xvdb
+        Ebs:
+          VolumeSize: 500
+          VolumeType: "gp2"
+      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      InstanceType: t2.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ2
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref WorkerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-2
+
+  WorkerNode3:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 300
+          VolumeType: "gp2"
+      - DeviceName: /dev/xvdb
+        Ebs:
+          VolumeSize: 500
+          VolumeType: "gp2"
+      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      InstanceType: t2.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ3
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref WorkerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-3
+  # Note: Target group attachments will be handled during OpenShift installation
+  # The OpenShift installer will automatically register nodes with the appropriate target groups
+
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${AWS::StackName}-VPC-ID
+
+  BastionPublicIP:
+    Description: Bastion Host Public IP
+    Value: !Ref BastionEIP
+
+  ApplicationLoadBalancerDNS:
+    Description: Application Load Balancer DNS Name (Internal) - Single LB for all traffic
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  ClusterAPIEndpoint:
+    Description: OpenShift API Endpoint (Internal)
+    Value: !Sub https://${ApplicationLoadBalancer.DNSName}:6443
+
+  ClusterAppsWildcard:
+    Description: Apps Wildcard Domain
+    Value: !Sub '*.apps.${ClusterName}.${BaseDomain}'
+
+  DNSConfiguration:
+    Description: Required DNS CNAME records (internal access only)
+    Value: !Sub |
+      Single ALB handles all traffic. Create the following CNAME records in your DNS:
+      api.${ClusterName}.${BaseDomain} -> ${ApplicationLoadBalancer.DNSName}
+      *.apps.${ClusterName}.${BaseDomain} -> ${ApplicationLoadBalancer.DNSName}
+
+      Access the cluster through the bastion host at: ${BastionEIP}
+      From bastion, you can access:
+      - OpenShift Console: https://console-openshift-console.apps.${ClusterName}.${BaseDomain}
+      - API: https://api.${ClusterName}.${BaseDomain}:6443
