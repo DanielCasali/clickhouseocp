@@ -19,7 +19,7 @@ RUN dnf update -y && \
         diffutils \
         make \
         rpm-build \
-        nasm \
+        yasm-devel \
         glibc-devel \
         libstdc++-devel \
         zlib-devel \
