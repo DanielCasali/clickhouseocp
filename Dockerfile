@@ -54,12 +54,14 @@ RUN dnf install -y --allowerasing \
         clang \
         clang-tools-extra \
         llvm \
-        llvm-devel && \
+        llvm-devel \
+        lld && \
     dnf clean all
 
-# Set environment to use Clang
+# Set environment to use Clang with LLD linker
 ENV CC=clang
 ENV CXX=clang++
+ENV LDFLAGS="-fuse-ld=lld"
 
 # Clone ClickHouse source (using stable tag)
 ARG CLICKHOUSE_VERSION=v25.7.4.11-stable
@@ -83,6 +85,8 @@ RUN mkdir -p /clickhouse-source/build && \
         -DWERROR=OFF \
         -DCMAKE_C_COMPILER=clang \
         -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+        -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
         -GNinja && \
     ninja clickhouse-server clickhouse-client
 
