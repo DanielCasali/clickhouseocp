@@ -1,145 +1,269 @@
-FROM ubuntu:22.04
+# Multi-stage build for ClickHouse on UBI 9
+FROM registry.access.redhat.com/ubi9/ubi:latest AS builder
 
-# Prevent interactive prompts during package installation
-ARG DEBIAN_FRONTEND=noninteractive
-
-# ARG for quick switch to a given ubuntu mirror
-ARG apt_archive="http://archive.ubuntu.com"
-
-# ClickHouse version and repository settings
-ARG REPO_CHANNEL="stable"
-ARG REPOSITORY="deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb ${REPO_CHANNEL} main"
-ARG VERSION="25.7.4.11"
-ARG PACKAGES="clickhouse-client clickhouse-server clickhouse-common-static"
-
-# Create clickhouse user/group with fixed uid/gid for OpenShift compatibility
-# Important: Use GID 1001 and group 0 (root) for OpenShift
-RUN sed -i "s|http://archive.ubuntu.com|${apt_archive}|g" /etc/apt/sources.list \
-    && groupadd -r clickhouse --gid=1001 \
-    && useradd -r -g clickhouse --uid=1001 --home-dir=/var/lib/clickhouse --shell=/bin/bash clickhouse \
-    && apt-get update \
-    && apt-get install --yes --no-install-recommends \
-        busybox \
-        ca-certificates \
-        locales \
-        tzdata \
+# Install build dependencies
+RUN dnf update -y && \
+    dnf install -y \
+        git \
+        cmake \
+        ninja-build \
+        gcc \
+        gcc-c++ \
+        python3 \
+        python3-pip \
+        curl \
         wget \
-        dirmngr \
-        gnupg2 \
-    && busybox --install -s \
-    && rm -rf /var/lib/apt/lists/* /var/cache/debconf /tmp/*
+        tar \
+        gzip \
+        which \
+        diffutils \
+        make \
+        rpm-build \
+        yasm \
+        glibc-devel \
+        libstdc++-devel \
+        zlib-devel \
+        openssl-devel \
+        libicu-devel \
+        readline-devel \
+        unixODBC-devel && \
+    dnf clean all
 
-# Install ClickHouse from the official repository
-RUN mkdir -p /etc/apt/sources.list.d \
-    && GNUPGHOME=$(mktemp -d) \
-    && GNUPGHOME="$GNUPGHOME" gpg --batch --no-default-keyring \
-        --keyring /usr/share/keyrings/clickhouse-keyring.gpg \
-        --keyserver hkp://keyserver.ubuntu.com:80 \
-        --recv-keys 3a9ea1193a97b548be1457d48919f6bd2b48d754 \
-    && rm -rf "$GNUPGHOME" \
-    && chmod +r /usr/share/keyrings/clickhouse-keyring.gpg \
-    && echo "${REPOSITORY}" > /etc/apt/sources.list.d/clickhouse.list \
-    && echo "Installing ClickHouse from repository: ${REPOSITORY}" \
-    && apt-get update \
-    && for package in ${PACKAGES}; do \
-        packages="${packages} ${package}=${VERSION}" \
-    ; done \
-    && apt-get install --yes --no-install-recommends ${packages} \
-    && rm -rf /var/lib/apt/lists/* /var/cache/debconf /tmp/* \
-    && apt-get autoremove --purge -yq dirmngr gnupg2
+# Install newer CMake (ClickHouse requires >= 3.20)
+RUN cd /tmp && \
+    wget https://github.com/Kitware/CMake/releases/download/v3.28.1/cmake-3.28.1-linux-x86_64.tar.gz && \
+    tar -xzf cmake-3.28.1-linux-x86_64.tar.gz && \
+    cp -r cmake-3.28.1-linux-x86_64/* /usr/local/ && \
+    rm -rf cmake-3.28.1* && \
+    ln -sf /usr/local/bin/cmake /usr/bin/cmake
 
-# Post-install setup and OpenShift compatibility
-RUN clickhouse-local -q 'SELECT * FROM system.build_options' \
-    && mkdir -p /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server /etc/clickhouse-client \
-    && mkdir -p /var/lib/clickhouse/preprocessed_configs \
-    && mkdir /docker-entrypoint-initdb.d
+# Install LLVM/Clang 17 (ClickHouse prefers Clang)
+RUN cd /tmp && \
+    wget https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-rhel86.tar.xz && \
+    tar -xf clang+llvm-17.0.6-x86_64-linux-gnu-rhel86.tar.xz && \
+    cp -r clang+llvm-17.0.6-x86_64-linux-gnu-rhel86/* /usr/local/ && \
+    rm -rf clang+llvm-17.0.6* && \
+    ln -sf /usr/local/bin/clang /usr/bin/clang && \
+    ln -sf /usr/local/bin/clang++ /usr/bin/clang++
 
-# Configure locale and timezone
-RUN locale-gen en_US.UTF-8
-ENV LANG=en_US.UTF-8
-ENV TZ=UTC
+# Set environment for Clang
+ENV CC=clang
+ENV CXX=clang++
 
-# Create default configuration for OpenShift
-RUN echo '<?xml version="1.0"?>' > /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '<yandex>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <!-- Listen for connections from anywhere -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <listen_host>0.0.0.0</listen_host>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <listen_host>::</listen_host>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <!-- Don'\''t exit on SIGPIPE -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <listen_try>1</listen_try>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <!-- Set path for preprocessed configs -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <path>/var/lib/clickhouse/</path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <!-- Logging configuration -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    <logger>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '        <console>true</console>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '        <level>information</level>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '    </logger>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
-    && echo '</yandex>' >> /etc/clickhouse-server/config.d/docker_related_config.xml
+# Clone ClickHouse source (using stable tag)
+ARG CLICKHOUSE_VERSION=v25.7.4.11-stable
+RUN git clone --recursive --shallow-submodules --branch ${CLICKHOUSE_VERSION} \
+    https://github.com/ClickHouse/ClickHouse.git /clickhouse-source
+
+# Build ClickHouse
+WORKDIR /clickhouse-source
+RUN mkdir -p /clickhouse-source/build && \
+    cd /clickhouse-source/build && \
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DENABLE_TESTS=OFF \
+        -DENABLE_EXAMPLES=OFF \
+        -DUSE_STATIC_LIBRARIES=ON \
+        -DSPLIT_SHARED_LIBRARIES=OFF \
+        -DENABLE_FUZZING=OFF \
+        -DENABLE_UTILS=ON \
+        -DENABLE_THINLTO=OFF \
+        -DWERROR=OFF \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -GNinja && \
+    ninja clickhouse-server clickhouse-client
+
+# Create installation directory
+RUN mkdir -p /clickhouse-install/usr/bin && \
+    cp /clickhouse-source/build/programs/clickhouse* /clickhouse-install/usr/bin/ && \
+    chmod +x /clickhouse-install/usr/bin/clickhouse*
+
+# Final runtime image
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+
+# Install minimal runtime dependencies
+RUN microdnf update -y && \
+    microdnf install -y \
+        glibc \
+        libstdc++ \
+        zlib \
+        openssl-libs \
+        libicu \
+        tzdata \
+        ca-certificates \
+        procps-ng \
+        shadow-utils && \
+    microdnf clean all
+
+# Create clickhouse user/group for OpenShift compatibility
+RUN groupadd -r clickhouse --gid=1001 && \
+    useradd -r -g clickhouse --uid=1001 --home-dir=/var/lib/clickhouse --shell=/bin/bash clickhouse
+
+# Copy ClickHouse binaries from builder
+COPY --from=builder /clickhouse-install/usr/bin/* /usr/bin/
+
+# Create all necessary directories
+RUN mkdir -p /var/lib/clickhouse/data \
+             /var/lib/clickhouse/tmp \
+             /var/lib/clickhouse/user_files \
+             /var/lib/clickhouse/format_schemas \
+             /var/lib/clickhouse/preprocessed_configs \
+             /var/lib/clickhouse/metadata \
+             /var/log/clickhouse-server \
+             /etc/clickhouse-server/config.d \
+             /etc/clickhouse-server/users.d \
+             /etc/clickhouse-client \
+             /docker-entrypoint-initdb.d
+
+# Create main ClickHouse configuration
+RUN echo '<?xml version="1.0"?>' > /etc/clickhouse-server/config.xml && \
+    echo '<yandex>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <logger>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <level>information</level>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <log>/var/log/clickhouse-server/clickhouse-server.log</log>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <size>1000M</size>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <count>10</count>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <console>true</console>' >> /etc/clickhouse-server/config.xml && \
+    echo '    </logger>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <http_port>8123</http_port>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <tcp_port>9000</tcp_port>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <mysql_port>9004</mysql_port>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <postgresql_port>9005</postgresql_port>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <listen_host>0.0.0.0</listen_host>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <max_connections>4096</max_connections>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <keep_alive_timeout>3</keep_alive_timeout>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <max_concurrent_queries>100</max_concurrent_queries>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <uncompressed_cache_size>8589934592</uncompressed_cache_size>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <mark_cache_size>5368709120</mark_cache_size>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <path>/var/lib/clickhouse/</path>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <users_config>users.xml</users_config>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <default_profile>default</default_profile>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <default_database>default</default_database>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <timezone>UTC</timezone>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <mlock_executable>false</mlock_executable>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <builtin_dictionaries_reload_interval>3600</builtin_dictionaries_reload_interval>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <max_session_timeout>3600</max_session_timeout>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <default_session_timeout>60</default_session_timeout>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <query_log>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <database>system</database>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <table>query_log</table>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <partition_by>toYYYYMM(event_date)</partition_by>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <flush_interval_milliseconds>7500</flush_interval_milliseconds>' >> /etc/clickhouse-server/config.xml && \
+    echo '    </query_log>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <dictionaries_config>*_dictionary.xml</dictionaries_config>' >> /etc/clickhouse-server/config.xml && \
+    echo '    <compression>' >> /etc/clickhouse-server/config.xml && \
+    echo '        <case>' >> /etc/clickhouse-server/config.xml && \
+    echo '            <min_part_size>10000000000</min_part_size>' >> /etc/clickhouse-server/config.xml && \
+    echo '            <min_part_size_ratio>0.01</min_part_size_ratio>' >> /etc/clickhouse-server/config.xml && \
+    echo '            <method>lz4</method>' >> /etc/clickhouse-server/config.xml && \
+    echo '        </case>' >> /etc/clickhouse-server/config.xml && \
+    echo '    </compression>' >> /etc/clickhouse-server/config.xml && \
+    echo '</yandex>' >> /etc/clickhouse-server/config.xml
+
+# Create default users configuration
+RUN echo '<?xml version="1.0"?>' > /etc/clickhouse-server/users.xml && \
+    echo '<yandex>' >> /etc/clickhouse-server/users.xml && \
+    echo '    <profiles>' >> /etc/clickhouse-server/users.xml && \
+    echo '        <default>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <max_memory_usage>10000000000</max_memory_usage>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <use_uncompressed_cache>0</use_uncompressed_cache>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <load_balancing>random</load_balancing>' >> /etc/clickhouse-server/users.xml && \
+    echo '        </default>' >> /etc/clickhouse-server/users.xml && \
+    echo '        <readonly>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <readonly>1</readonly>' >> /etc/clickhouse-server/users.xml && \
+    echo '        </readonly>' >> /etc/clickhouse-server/users.xml && \
+    echo '    </profiles>' >> /etc/clickhouse-server/users.xml && \
+    echo '    <users>' >> /etc/clickhouse-server/users.xml && \
+    echo '        <default>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <password></password>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <networks>' >> /etc/clickhouse-server/users.xml && \
+    echo '                <ip>::/0</ip>' >> /etc/clickhouse-server/users.xml && \
+    echo '            </networks>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <profile>default</profile>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <quota>default</quota>' >> /etc/clickhouse-server/users.xml && \
+    echo '        </default>' >> /etc/clickhouse-server/users.xml && \
+    echo '    </users>' >> /etc/clickhouse-server/users.xml && \
+    echo '    <quotas>' >> /etc/clickhouse-server/users.xml && \
+    echo '        <default>' >> /etc/clickhouse-server/users.xml && \
+    echo '            <interval>' >> /etc/clickhouse-server/users.xml && \
+    echo '                <duration>3600</duration>' >> /etc/clickhouse-server/users.xml && \
+    echo '                <queries>0</queries>' >> /etc/clickhouse-server/users.xml && \
+    echo '                <errors>0</errors>' >> /etc/clickhouse-server/users.xml && \
+    echo '                <result_rows>0</result_rows>' >> /etc/clickhouse-server/users.xml && \
+    echo '                <read_rows>0</read_rows>' >> /etc/clickhouse-server/users.xml && \
+    echo '                <execution_time>0</execution_time>' >> /etc/clickhouse-server/users.xml && \
+    echo '            </interval>' >> /etc/clickhouse-server/users.xml && \
+    echo '        </default>' >> /etc/clickhouse-server/users.xml && \
+    echo '    </quotas>' >> /etc/clickhouse-server/users.xml && \
+    echo '</yandex>' >> /etc/clickhouse-server/users.xml
 
 # Create entrypoint script
-RUN echo '#!/bin/bash' > /entrypoint.sh \
-    && echo 'set -eo pipefail' >> /entrypoint.sh \
-    && echo 'shopt -s nullglob' >> /entrypoint.sh \
-    && echo '' >> /entrypoint.sh \
-    && echo '# if command starts with an option, prepend clickhouse-server' >> /entrypoint.sh \
-    && echo 'if [ "${1:0:1}" = '\''-'\'' ]; then' >> /entrypoint.sh \
-    && echo '    set -- clickhouse-server "$@"' >> /entrypoint.sh \
-    && echo 'fi' >> /entrypoint.sh \
-    && echo '' >> /entrypoint.sh \
-    && echo '# For OpenShift - ensure all necessary directories exist' >> /entrypoint.sh \
-    && echo 'mkdir -p /var/lib/clickhouse/tmp' >> /entrypoint.sh \
-    && echo 'mkdir -p /var/lib/clickhouse/user_files' >> /entrypoint.sh \
-    && echo 'mkdir -p /var/lib/clickhouse/format_schemas' >> /entrypoint.sh \
-    && echo 'mkdir -p /var/lib/clickhouse/preprocessed_configs' >> /entrypoint.sh \
-    && echo 'mkdir -p /var/log/clickhouse-server' >> /entrypoint.sh \
-    && echo '' >> /entrypoint.sh \
-    && echo '# Change to the ClickHouse data directory' >> /entrypoint.sh \
-    && echo 'cd /var/lib/clickhouse' >> /entrypoint.sh \
-    && echo '' >> /entrypoint.sh \
-    && echo '# if CLICKHOUSE_PASSWORD is set, update the configuration' >> /entrypoint.sh \
-    && echo 'if [[ -n "$CLICKHOUSE_PASSWORD" ]]; then' >> /entrypoint.sh \
-    && echo '    echo "Setting up authentication..."' >> /entrypoint.sh \
-    && echo '    # This would be handled by our ConfigMaps/Secrets in Kubernetes' >> /entrypoint.sh \
-    && echo 'fi' >> /entrypoint.sh \
-    && echo '' >> /entrypoint.sh \
-    && echo '# Execute the command' >> /entrypoint.sh \
-    && echo 'exec "$@"' >> /entrypoint.sh
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'set -eo pipefail' >> /entrypoint.sh && \
+    echo '' >> /entrypoint.sh && \
+    echo '# if command starts with an option, prepend clickhouse-server' >> /entrypoint.sh && \
+    echo 'if [ "${1:0:1}" = '\''-'\'' ]; then' >> /entrypoint.sh && \
+    echo '    set -- clickhouse-server "$@"' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo '' >> /entrypoint.sh && \
+    echo '# Ensure all directories exist' >> /entrypoint.sh && \
+    echo 'mkdir -p /var/lib/clickhouse/data' >> /entrypoint.sh && \
+    echo 'mkdir -p /var/lib/clickhouse/tmp' >> /entrypoint.sh && \
+    echo 'mkdir -p /var/lib/clickhouse/user_files' >> /entrypoint.sh && \
+    echo 'mkdir -p /var/lib/clickhouse/format_schemas' >> /entrypoint.sh && \
+    echo 'mkdir -p /var/lib/clickhouse/preprocessed_configs' >> /entrypoint.sh && \
+    echo 'mkdir -p /var/lib/clickhouse/metadata' >> /entrypoint.sh && \
+    echo 'mkdir -p /var/log/clickhouse-server' >> /entrypoint.sh && \
+    echo '' >> /entrypoint.sh && \
+    echo '# Change to ClickHouse directory' >> /entrypoint.sh && \
+    echo 'cd /var/lib/clickhouse' >> /entrypoint.sh && \
+    echo '' >> /entrypoint.sh && \
+    echo '# Handle authentication setup from environment/secrets' >> /entrypoint.sh && \
+    echo 'if [[ -n "$CLICKHOUSE_USER" ]] && [[ -n "$CLICKHOUSE_PASSWORD" ]]; then' >> /entrypoint.sh && \
+    echo '    echo "Setting up custom user authentication..."' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo '' >> /entrypoint.sh && \
+    echo '# Execute the command' >> /entrypoint.sh && \
+    echo 'exec "$@"' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
 
-# Install gosu for proper user switching (needed for entrypoint)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
-    && rm -rf /var/lib/apt/lists/* \
-    && gosu nobody true
+# Configure locale
+ENV LANG=C.UTF-8
+ENV TZ=UTC
 
-# Make entrypoint executable
-RUN chmod +x /entrypoint.sh
+# CRITICAL: OpenShift compatibility - group 0 permissions
+RUN chgrp -R 0 /var/lib/clickhouse \
+               /var/log/clickhouse-server \
+               /etc/clickhouse-server \
+               /etc/clickhouse-client \
+               /docker-entrypoint-initdb.d && \
+    chmod -R g=u /var/lib/clickhouse \
+                 /var/log/clickhouse-server \
+                 /etc/clickhouse-server \
+                 /etc/clickhouse-client \
+                 /docker-entrypoint-initdb.d
 
-# CRITICAL: OpenShift compatibility - make everything group-writable
-# This allows OpenShift to assign any UID while keeping gid=0 (root group)
-RUN chgrp -R 0 /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server /etc/clickhouse-client /docker-entrypoint-initdb.d \
-    && chmod -R g=u /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server /etc/clickhouse-client /docker-entrypoint-initdb.d
-
-# Set working directory to the ClickHouse data directory
+# Set working directory
 WORKDIR /var/lib/clickhouse
 
-# Expose standard ClickHouse ports
-EXPOSE 9000 8123 9009
+# Expose ports
+EXPOSE 8123 9000 9004 9005
 
-# Set volumes
+# Set volume
 VOLUME ["/var/lib/clickhouse"]
 
-# Environment variables
-ENV CLICKHOUSE_CONFIG=/etc/clickhouse-server/config.xml
-
-# Use numeric user ID for better OpenShift compatibility
+# Use numeric user for OpenShift
 USER 1001
 
-# Default command
+# Environment
+ENV CLICKHOUSE_CONFIG=/etc/clickhouse-server/config.xml
+
+# Default entrypoint and command
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["clickhouse-server"]
+CMD ["clickhouse-server", "--config-file=/etc/clickhouse-server/config.xml"]
