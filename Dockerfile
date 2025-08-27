@@ -38,7 +38,7 @@ RUN echo '[almalinux-devel]' > /etc/yum.repos.d/almalinux-devel.repo && \
     echo 'gpgcheck=0' >> /etc/yum.repos.d/almalinux-devel.repo
 
 # Install yasm from AlmaLinux devel repo
-RUN dnf install -y yasm && \
+RUN dnf install -y --allowerasing yasm && \
     dnf clean all
 
 # Install newer CMake (ClickHouse requires >= 3.20)
@@ -49,18 +49,17 @@ RUN cd /tmp && \
     rm -rf cmake-3.28.1* && \
     ln -sf /usr/local/bin/cmake /usr/bin/cmake
 
-# Install LLVM/Clang 17 (ClickHouse prefers Clang)
-RUN cd /tmp && \
-    wget https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-rhel86.tar.xz && \
-    tar -xf clang+llvm-17.0.6-x86_64-linux-gnu-rhel86.tar.xz && \
-    cp -r clang+llvm-17.0.6-x86_64-linux-gnu-rhel86/* /usr/local/ && \
-    rm -rf clang+llvm-17.0.6* && \
-    ln -sf /usr/local/bin/clang /usr/bin/clang && \
-    ln -sf /usr/local/bin/clang++ /usr/bin/clang++
+# Install GCC toolset 13 from AlmaLinux for modern C++ support
+RUN dnf install -y --allowerasing \
+        gcc-toolset-13-gcc \
+        gcc-toolset-13-gcc-c++ \
+        gcc-toolset-13-binutils && \
+    dnf clean all
 
-# Set environment for Clang
-ENV CC=clang
-ENV CXX=clang++
+# Set environment to use GCC toolset 13
+ENV CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc
+ENV CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+ENV PATH="/opt/rh/gcc-toolset-13/root/usr/bin:$PATH"
 
 # Clone ClickHouse source (using stable tag)
 ARG CLICKHOUSE_VERSION=v25.7.4.11-stable
@@ -82,8 +81,8 @@ RUN mkdir -p /clickhouse-source/build && \
         -DENABLE_UTILS=ON \
         -DENABLE_THINLTO=OFF \
         -DWERROR=OFF \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc \
+        -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/g++ \
         -GNinja && \
     ninja clickhouse-server clickhouse-client
 
