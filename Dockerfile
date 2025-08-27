@@ -59,62 +59,43 @@ ENV LANG=en_US.UTF-8
 ENV TZ=UTC
 
 # Create default configuration for OpenShift
-RUN cat > /etc/clickhouse-server/config.d/docker_related_config.xml << 'XMLEOF'
-<yandex>
-    <!-- Listen for connections from anywhere -->
-    <listen_host>0.0.0.0</listen_host>
-    <listen_host>::</listen_host>
-    
-    <!-- Don't exit on SIGPIPE -->
-    <listen_try>1</listen_try>
-    
-    <!-- Allow empty password for default user -->
-    <users>
-        <default>
-            <password></password>
-            <networks>
-                <ip>::/0</ip>
-            </networks>
-        </default>
-    </users>
-    
-    <!-- Logging configuration -->
-    <logger>
-        <console>true</console>
-        <level>information</level>
-    </logger>
-</yandex>
-XMLEOF
+RUN echo '<?xml version="1.0"?>' > /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '<yandex>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <!-- Listen for connections from anywhere -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <listen_host>0.0.0.0</listen_host>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <listen_host>::</listen_host>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <!-- Don'\''t exit on SIGPIPE -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <listen_try>1</listen_try>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <!-- Logging configuration -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <logger>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '        <console>true</console>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '        <level>information</level>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    </logger>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '</yandex>' >> /etc/clickhouse-server/config.d/docker_related_config.xml
 
 # Create entrypoint script
-RUN cat > /entrypoint.sh << 'SCRIPTEOF'
-#!/bin/bash
-set -eo pipefail
-shopt -s nullglob
-
-# if command starts with an option, prepend clickhouse-server
-if [ "${1:0:1}" = '-' ]; then
-    set -- clickhouse-server "$@"
-fi
-
-# allow the container to be started with `--user`
-if [[ "$1" = 'clickhouse-server' ]] && [[ "$(id -u)" = '0' ]]; then
-    # if running as root, ensure directories exist and have correct ownership
-    mkdir -p /var/lib/clickhouse /var/log/clickhouse-server
-    # change ownership only if we're root
-    chown -R clickhouse:clickhouse /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server /etc/clickhouse-client
-    # if CLICKHOUSE_PASSWORD is set, update the configuration
-    if [[ -n "$CLICKHOUSE_PASSWORD" ]]; then
-        echo "Setting up authentication..."
-        # This would be handled by our ConfigMaps/Secrets in Kubernetes
-    fi
-    
-    exec gosu clickhouse "$@"
-fi
-
-# if not root or not clickhouse-server, just exec the command
-exec "$@"
-SCRIPTEOF
+RUN echo '#!/bin/bash' > /entrypoint.sh \
+    && echo 'set -eo pipefail' >> /entrypoint.sh \
+    && echo 'shopt -s nullglob' >> /entrypoint.sh \
+    && echo '' >> /entrypoint.sh \
+    && echo '# if command starts with an option, prepend clickhouse-server' >> /entrypoint.sh \
+    && echo 'if [ "${1:0:1}" = '\''-'\'' ]; then' >> /entrypoint.sh \
+    && echo '    set -- clickhouse-server "$@"' >> /entrypoint.sh \
+    && echo 'fi' >> /entrypoint.sh \
+    && echo '' >> /entrypoint.sh \
+    && echo '# For OpenShift - just ensure directories exist and exec' >> /entrypoint.sh \
+    && echo 'mkdir -p /var/lib/clickhouse /var/log/clickhouse-server' >> /entrypoint.sh \
+    && echo '' >> /entrypoint.sh \
+    && echo '# if CLICKHOUSE_PASSWORD is set, update the configuration' >> /entrypoint.sh \
+    && echo 'if [[ -n "$CLICKHOUSE_PASSWORD" ]]; then' >> /entrypoint.sh \
+    && echo '    echo "Setting up authentication..."' >> /entrypoint.sh \
+    && echo '    # This would be handled by our ConfigMaps/Secrets in Kubernetes' >> /entrypoint.sh \
+    && echo 'fi' >> /entrypoint.sh \
+    && echo '' >> /entrypoint.sh \
+    && echo '# Execute the command' >> /entrypoint.sh \
+    && echo 'exec "$@"' >> /entrypoint.sh
 
 # Install gosu for proper user switching (needed for entrypoint)
 RUN apt-get update \
