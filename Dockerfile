@@ -19,14 +19,16 @@ RUN dnf update -y && \
         diffutils \
         make \
         rpm-build \
-        yasm \
+        nasm \
         glibc-devel \
         libstdc++-devel \
         zlib-devel \
         openssl-devel \
         libicu-devel \
-        readline-devel \
-        unixODBC-devel && \
+        libedit-devel \
+        unixODBC-devel \
+        libuuid-devel \
+        libzstd-devel && \
     dnf clean all
 
 # Install newer CMake (ClickHouse requires >= 3.20)
