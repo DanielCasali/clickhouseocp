@@ -43,6 +43,31 @@ RUN dnf install -y --allowerasing \
         yasm && \
     dnf clean all
 
+# Check what nasm-rdoff installed and create symlinks if needed
+RUN echo "Checking nasm-rdoff package contents:" && \
+    rpm -ql nasm-rdoff && \
+    echo "Looking for nasm executable:" && \
+    find /usr -name "*nasm*" -type f 2>/dev/null && \
+    echo "Checking if nasm is in PATH:" && \
+    which nasm || echo "nasm not found in PATH" && \
+    if [ -f /usr/bin/nasm ]; then echo "nasm found at /usr/bin/nasm"; \
+    elif [ -f /usr/local/bin/nasm ]; then echo "nasm found at /usr/local/bin/nasm"; ln -sf /usr/local/bin/nasm /usr/bin/nasm; \
+    else echo "Installing NASM from source as fallback"; \
+        cd /tmp && \
+        wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.01/nasm-2.16.01.tar.xz && \
+        tar -xf nasm-2.16.01.tar.xz && \
+        cd nasm-2.16.01 && \
+        ./configure --prefix=/usr/local && \
+        make && \
+        make install && \
+        ln -sf /usr/local/bin/nasm /usr/bin/nasm && \
+        cd / && \
+        rm -rf /tmp/nasm-*; \
+    fi && \
+    echo "Final nasm location:" && \
+    which nasm && \
+    /usr/bin/nasm --version
+
 # Install newer CMake (ClickHouse requires >= 3.20)
 RUN cd /tmp && \
     wget https://github.com/Kitware/CMake/releases/download/v3.28.1/cmake-3.28.1-linux-x86_64.tar.gz && \
