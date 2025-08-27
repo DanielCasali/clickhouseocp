@@ -1,7 +1,7 @@
 FROM registry.access.redhat.com/ubi8/ubi:latest
 
 # Set environment variables
-ENV CLICKHOUSE_VERSION=23.12.2.59
+ENV CLICKHOUSE_VERSION=25.7.4.11
 
 # Install required packages
 RUN dnf update -y && \
@@ -31,14 +31,21 @@ RUN mkdir -p /var/lib/clickhouse \
 
 # Download and install ClickHouse binaries
 RUN cd /tmp && \
-    wget -q "https://github.com/ClickHouse/ClickHouse/releases/download/v${CLICKHOUSE_VERSION}/clickhouse-common-static-${CLICKHOUSE_VERSION}-amd64.tgz" && \
-    wget -q "https://github.com/ClickHouse/ClickHouse/releases/download/v${CLICKHOUSE_VERSION}/clickhouse-server-${CLICKHOUSE_VERSION}-amd64.tgz" && \
-    wget -q "https://github.com/ClickHouse/ClickHouse/releases/download/v${CLICKHOUSE_VERSION}/clickhouse-client-${CLICKHOUSE_VERSION}-amd64.tgz" && \
+    echo "Downloading ClickHouse binaries..." && \
+    curl -LO "https://github.com/ClickHouse/ClickHouse/releases/download/v${CLICKHOUSE_VERSION}/clickhouse-common-static-${CLICKHOUSE_VERSION}-amd64.tgz" && \
+    curl -LO "https://github.com/ClickHouse/ClickHouse/releases/download/v${CLICKHOUSE_VERSION}/clickhouse-server-${CLICKHOUSE_VERSION}-amd64.tgz" && \
+    curl -LO "https://github.com/ClickHouse/ClickHouse/releases/download/v${CLICKHOUSE_VERSION}/clickhouse-client-${CLICKHOUSE_VERSION}-amd64.tgz" && \
+    echo "Extracting binaries..." && \
     tar -xzf "clickhouse-common-static-${CLICKHOUSE_VERSION}-amd64.tgz" --strip-components=2 -C /usr/bin && \
     tar -xzf "clickhouse-server-${CLICKHOUSE_VERSION}-amd64.tgz" --strip-components=2 -C /usr/bin && \
     tar -xzf "clickhouse-client-${CLICKHOUSE_VERSION}-amd64.tgz" --strip-components=2 -C /usr/bin && \
+    echo "Setting permissions..." && \
     chmod +x /usr/bin/clickhouse* && \
-    rm -rf /tmp/clickhouse-*.tgz
+    echo "Cleaning up..." && \
+    rm -rf /tmp/clickhouse-*.tgz && \
+    echo "Verifying installation..." && \
+    ls -la /usr/bin/clickhouse* && \
+    /usr/bin/clickhouse-server --version
 
 # Create default configuration files
 RUN cat > /etc/clickhouse-server/config.xml << 'EOF'
