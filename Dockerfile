@@ -10,7 +10,8 @@ RUN dnf update -y && \
         wget \
         tar \
         gzip \
-        libc6-compat \
+        glibc \
+        libstdc++ \
         ca-certificates \
         tzdata && \
     dnf clean all
