@@ -49,17 +49,17 @@ RUN cd /tmp && \
     rm -rf cmake-3.28.1* && \
     ln -sf /usr/local/bin/cmake /usr/bin/cmake
 
-# Install GCC toolset 13 from AlmaLinux for modern C++ support
+# Install Clang from AlmaLinux AppStream repository (Clang 16)
 RUN dnf install -y --allowerasing \
-        gcc-toolset-13-gcc \
-        gcc-toolset-13-gcc-c++ \
-        gcc-toolset-13-binutils && \
+        clang \
+        clang-tools-extra \
+        llvm \
+        llvm-devel && \
     dnf clean all
 
-# Set environment to use GCC toolset 13
-ENV CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc
-ENV CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
-ENV PATH="/opt/rh/gcc-toolset-13/root/usr/bin:$PATH"
+# Set environment to use Clang
+ENV CC=clang
+ENV CXX=clang++
 
 # Clone ClickHouse source (using stable tag)
 ARG CLICKHOUSE_VERSION=v25.7.4.11-stable
@@ -81,8 +81,8 @@ RUN mkdir -p /clickhouse-source/build && \
         -DENABLE_UTILS=ON \
         -DENABLE_THINLTO=OFF \
         -DWERROR=OFF \
-        -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc \
-        -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/g++ \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++ \
         -GNinja && \
     ninja clickhouse-server clickhouse-client
 
