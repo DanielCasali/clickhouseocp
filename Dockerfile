@@ -51,6 +51,7 @@ RUN mkdir -p /etc/apt/sources.list.d \
 # Post-install setup and OpenShift compatibility
 RUN clickhouse-local -q 'SELECT * FROM system.build_options' \
     && mkdir -p /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server /etc/clickhouse-client \
+    && mkdir -p /var/lib/clickhouse/preprocessed_configs \
     && mkdir /docker-entrypoint-initdb.d
 
 # Configure locale and timezone
@@ -67,6 +68,12 @@ RUN echo '<?xml version="1.0"?>' > /etc/clickhouse-server/config.d/docker_relate
     && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
     && echo '    <!-- Don'\''t exit on SIGPIPE -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
     && echo '    <listen_try>1</listen_try>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <!-- Set path for preprocessed configs -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <path>/var/lib/clickhouse/</path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
+    && echo '    <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
     && echo '    ' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
     && echo '    <!-- Logging configuration -->' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
     && echo '    <logger>' >> /etc/clickhouse-server/config.d/docker_related_config.xml \
@@ -85,8 +92,15 @@ RUN echo '#!/bin/bash' > /entrypoint.sh \
     && echo '    set -- clickhouse-server "$@"' >> /entrypoint.sh \
     && echo 'fi' >> /entrypoint.sh \
     && echo '' >> /entrypoint.sh \
-    && echo '# For OpenShift - just ensure directories exist and exec' >> /entrypoint.sh \
-    && echo 'mkdir -p /var/lib/clickhouse /var/log/clickhouse-server' >> /entrypoint.sh \
+    && echo '# For OpenShift - ensure all necessary directories exist' >> /entrypoint.sh \
+    && echo 'mkdir -p /var/lib/clickhouse/tmp' >> /entrypoint.sh \
+    && echo 'mkdir -p /var/lib/clickhouse/user_files' >> /entrypoint.sh \
+    && echo 'mkdir -p /var/lib/clickhouse/format_schemas' >> /entrypoint.sh \
+    && echo 'mkdir -p /var/lib/clickhouse/preprocessed_configs' >> /entrypoint.sh \
+    && echo 'mkdir -p /var/log/clickhouse-server' >> /entrypoint.sh \
+    && echo '' >> /entrypoint.sh \
+    && echo '# Change to the ClickHouse data directory' >> /entrypoint.sh \
+    && echo 'cd /var/lib/clickhouse' >> /entrypoint.sh \
     && echo '' >> /entrypoint.sh \
     && echo '# if CLICKHOUSE_PASSWORD is set, update the configuration' >> /entrypoint.sh \
     && echo 'if [[ -n "$CLICKHOUSE_PASSWORD" ]]; then' >> /entrypoint.sh \
@@ -110,6 +124,9 @@ RUN chmod +x /entrypoint.sh
 # This allows OpenShift to assign any UID while keeping gid=0 (root group)
 RUN chgrp -R 0 /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server /etc/clickhouse-client /docker-entrypoint-initdb.d \
     && chmod -R g=u /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server /etc/clickhouse-client /docker-entrypoint-initdb.d
+
+# Set working directory to the ClickHouse data directory
+WORKDIR /var/lib/clickhouse
 
 # Expose standard ClickHouse ports
 EXPOSE 9000 8123 9009
