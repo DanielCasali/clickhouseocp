@@ -149,31 +149,32 @@ RUN groupadd -r clickhouse --gid=1001 && \
 
 # Copy ClickHouse binary from builder
 COPY --from=builder /clickhouse-source/build/programs/clickhouse /usr/bin/
-RUN cd /clickhouse-install/usr/bin && \
-    ln -sf clickhouse clickhouse-benchmark
-    ln -sf clickhouse clickhouse-chdig
-    ln -sf clickhouse clickhouse-check-marks
-    ln -sf clickhouse clickhouse-checksum-for-compressed-block
-    ln -sf clickhouse clickhouse-client
-    ln -sf clickhouse clickhouse-compressor
-    ln -sf clickhouse clickhouse-disks
-    ln -sf clickhouse clickhouse-extract-from-config
-    ln -sf clickhouse clickhouse-format
-    ln -sf clickhouse clickhouse-fst-dump-tree
-    ln -sf clickhouse clickhouse-git-import
-    ln -sf clickhouse clickhouse-keeper
-    ln -sf clickhouse clickhouse-keeper-bench
-    ln -sf clickhouse clickhouse-keeper-client
-    ln -sf clickhouse clickhouse-keeper-converter
-    ln -sf clickhouse clickhouse-keeper-data-dumper
-    ln -sf clickhouse clickhouse-keeper-utils
-    ln -sf clickhouse clickhouse-local
-    ln -sf clickhouse clickhouse-obfuscator
+RUN cd /usr/bin && \
+    ln -sf clickhouse clickhouse-benchmark  && \
+    ln -sf clickhouse clickhouse-chdig  && \
+    ln -sf clickhouse clickhouse-check-marks  && \
+    ln -sf clickhouse clickhouse-checksum-for-compressed-block  && \
+    ln -sf clickhouse clickhouse-client && \
+    ln -sf clickhouse clickhouse-compressor && \
+    ln -sf clickhouse clickhouse-disks && \
+    ln -sf clickhouse clickhouse-extract-from-config && \
+    ln -sf clickhouse clickhouse-format && \
+    ln -sf clickhouse clickhouse-fst-dump-tree && \
+    ln -sf clickhouse clickhouse-git-import && \
+    ln -sf clickhouse clickhouse-keeper && \
+    ln -sf clickhouse clickhouse-keeper-bench && \
+    ln -sf clickhouse clickhouse-keeper-client && \
+    ln -sf clickhouse clickhouse-keeper-converter && \
+    ln -sf clickhouse clickhouse-keeper-data-dumper && \
+    ln -sf clickhouse clickhouse-keeper-utils && \
+    ln -sf clickhouse clickhouse-local && \
+    ln -sf clickhouse clickhouse-obfuscator && \
     ln -sf clickhouse clickhouse-server
-    ln -sf clickhouse clickhouse-static-files-disk-uploader
-    ln -sf clickhouse clickhouse-su
-    ln -sf clickhouse clickhouse-zookeeper-dump-tree
-    ln -sf clickhouse clickhouse-zookeeper-remove-by-list
+    ln -sf clickhouse clickhouse-static-files-disk-uploader && \
+    ln -sf clickhouse clickhouse-su && \
+    ln -sf clickhouse clickhouse-zookeeper-dump-tree && \
+    ln -sf clickhouse clickhouse-zookeeper-remove-by-list && \
+    cd -
 
 # Create all necessary directories
 RUN mkdir -p /var/lib/clickhouse/data \
