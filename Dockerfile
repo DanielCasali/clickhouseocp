@@ -125,10 +125,21 @@ RUN mkdir -p /clickhouse-source/build && \
     echo "Building ClickHouse..." && \
     ninja clickhouse || ninja clickhouse-server clickhouse-client || ninja all
 
-# Create installation directory
+# Create installation directory and install with symlinks
 RUN mkdir -p /clickhouse-install/usr/bin && \
-    cp /clickhouse-source/build/programs/clickhouse* /clickhouse-install/usr/bin/ && \
-    chmod +x /clickhouse-install/usr/bin/clickhouse*
+    cp /clickhouse-source/build/programs/clickhouse /clickhouse-install/usr/bin/ && \
+    chmod +x /clickhouse-install/usr/bin/clickhouse && \
+    cd /clickhouse-install/usr/bin && \
+    ln -sf clickhouse clickhouse-server && \
+    ln -sf clickhouse clickhouse-client && \
+    ln -sf clickhouse clickhouse-local && \
+    ln -sf clickhouse clickhouse-benchmark && \
+    ln -sf clickhouse clickhouse-compressor && \
+    ln -sf clickhouse clickhouse-format && \
+    ln -sf clickhouse clickhouse-obfuscator && \
+    ln -sf clickhouse clickhouse-keeper && \
+    ln -sf clickhouse clickhouse-keeper-client && \
+    ln -sf clickhouse clickhouse-disks
 
 # Final runtime image
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
