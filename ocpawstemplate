@@ -446,7 +446,7 @@ Resources:
         Ebs:
           VolumeSize: 200
           VolumeType: "gp2"
-      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ1
@@ -466,7 +466,7 @@ Resources:
         Ebs:
           VolumeSize: 200
           VolumeType: "gp2"
-      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ1
@@ -485,7 +485,7 @@ Resources:
         Ebs:
           VolumeSize: 200
           VolumeType: "gp2"
-      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ2
@@ -504,7 +504,7 @@ Resources:
         Ebs:
           VolumeSize: 200
           VolumeType: "gp2"
-      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ3
@@ -528,7 +528,7 @@ Resources:
         Ebs:
           VolumeSize: 500
           VolumeType: "gp2"
-      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ1
@@ -551,7 +551,7 @@ Resources:
         Ebs:
           VolumeSize: 500
           VolumeType: "gp2"
-      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ2
@@ -574,7 +574,7 @@ Resources:
         Ebs:
           VolumeSize: 500
           VolumeType: "gp2"
-      ImageId: ami-05483066c3caaccf5 # Replace with newer RHCOS AMI
+      ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ3
