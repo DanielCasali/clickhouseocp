@@ -87,17 +87,16 @@ RUN dnf install -y --allowerasing \
         lld && \
     dnf clean all
 
-# Install Rust from AlmaLinux AppStream repository
-RUN dnf install -y --allowerasing \
-        rust \
-        rust-std-static \
-        cargo && \
-    dnf clean all
+# Install Rust nightly (required by ClickHouse for edition2024 feature)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    source ~/.cargo/env && \
+    rustup toolchain install nightly-2025-07-07 && \
+    rustup default nightly-2025-07-07
 
-# Set environment to use Clang and system Rust
+# Set environment to use Clang and nightly Rust
 ENV CC=clang
 ENV CXX=clang++
-ENV PATH="/usr/bin:$PATH"
+ENV PATH="/root/.cargo/bin:$PATH"
 
 # Clone ClickHouse source (using stable tag)
 ARG CLICKHOUSE_VERSION=v25.7.4.11-stable
