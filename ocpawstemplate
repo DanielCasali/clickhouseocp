@@ -308,7 +308,7 @@ Resources:
     Properties:
       Name: !Sub ${ClusterName}-api-tg
       Port: 6443
-      Protocol: HTTPS
+      Protocol: TCP
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
@@ -319,7 +319,7 @@ Resources:
     Properties:
       Name: !Sub ${ClusterName}-mcs-tg
       Port: 22623
-      Protocol: HTTPS
+      Protocol: TCP
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
@@ -330,7 +330,7 @@ Resources:
     Properties:
       Name: !Sub ${ClusterName}-http-tg
       Port: 80
-      Protocol: HTTP
+      Protocol: TCP
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
@@ -341,7 +341,7 @@ Resources:
     Properties:
       Name: !Sub ${ClusterName}-https-tg
       Port: 443
-      Protocol: HTTP
+      Protocol: TCP
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
@@ -356,9 +356,7 @@ Resources:
           TargetGroupArn: !Ref APITargetGroup
       LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 6443
-      Protocol: HTTPS
-      Certificates:
-        - CertificateArn: !Ref SSLCertificate
+      Protocol: TCP
 
   MCSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -368,9 +366,7 @@ Resources:
           TargetGroupArn: !Ref MCSTargetGroup
       LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 22623
-      Protocol: HTTPS
-      Certificates:
-        - CertificateArn: !Ref SSLCertificate
+      Protocol: TCP
 
   HTTPListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -380,7 +376,7 @@ Resources:
           TargetGroupArn: !Ref HTTPTargetGroup
       LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 80
-      Protocol: HTTP
+      Protocol: TCP
 
   HTTPSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -390,18 +386,7 @@ Resources:
           TargetGroupArn: !Ref HTTPSTargetGroup
       LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 443
-      Protocol: HTTPS
-      Certificates:
-        - CertificateArn: !Ref SSLCertificate
-
-  # SSL Certificate (self-signed for demo - replace with ACM certificate)
-  SSLCertificate:
-    Type: AWS::CertificateManager::Certificate
-    Properties:
-      DomainName: !Sub '*.apps.${ClusterName}.${BaseDomain}'
-      ValidationMethod: DNS
-      SubjectAlternativeNames:
-        - !Sub api.${ClusterName}.${BaseDomain}
+      Protocol: TCP
 
   # Bastion Host
   BastionEIP:
