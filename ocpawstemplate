@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Simple OpenShift 4 cluster infrastructure on AWS - Internal Load Balancers
+Description: Simple OpenShift 4 cluster infrastructure on AWS - Internal Network Load Balancer with Route53 DNS
 
 Parameters:
   KeyPairName:
@@ -8,12 +8,13 @@ Parameters:
 
   ClusterName:
     Type: String
-    Default: openshift
-    Description: Name of the OpenShift cluster
+    Default: ocp
+    Description: Name of the OpenShift cluster (will be subdomain of BaseDomain)
 
   BaseDomain:
     Type: String
-    Description: Base domain for the cluster (e.g., example.com)
+    Default: test.local
+    Description: Base domain for the cluster (e.g., test.local for internal DNS)
 
   VpcCidr:
     Type: String
@@ -208,25 +209,25 @@ Resources:
         - IpProtocol: tcp
           FromPort: 6443
           ToPort: 6443
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          CidrIp: !Ref VpcCidr
         - IpProtocol: tcp
           FromPort: 22623
           ToPort: 22623
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          CidrIp: !Ref VpcCidr
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          CidrIp: !Ref VpcCidr
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          CidrIp: !Ref VpcCidr
         # Allow all traffic within private subnets for cluster communication
-        - IpProtocol: -1
+        - IpProtocol: "-1"
           CidrIp: !Ref PrivateSubnetAZ1Cidr
-        - IpProtocol: -1
+        - IpProtocol: "-1"
           CidrIp: !Ref PrivateSubnetAZ2Cidr
-        - IpProtocol: -1
+        - IpProtocol: "-1"
           CidrIp: !Ref PrivateSubnetAZ3Cidr
       Tags:
         - Key: Name
@@ -259,48 +260,20 @@ Resources:
         - Key: Name
           Value: !Sub ${ClusterName}-bootstrap-sg
 
-  LoadBalancerSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for load balancer
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 10.0.0.0/24
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 10.0.0.0/24
-        - IpProtocol: tcp
-          FromPort: 6443
-          ToPort: 6443
-          CidrIp: 10.0.0.0/24
-        - IpProtocol: tcp
-          FromPort: 22623
-          ToPort: 22623
-          CidrIp: 10.0.0.0/24
-      Tags:
-        - Key: Name
-          Value: !Sub ${ClusterName}-lb-sg
-
-  # Application Load Balancer (internal-only) - handles all traffic
-  ApplicationLoadBalancer:
+  # Network Load Balancer (internal-only) - handles all TCP traffic
+  NetworkLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: !Sub ${ClusterName}-alb
+      Name: !Sub ${ClusterName}-nlb
       Scheme: internal
-      Type: application
+      Type: network
       Subnets:
         - !Ref PrivateSubnetAZ1
         - !Ref PrivateSubnetAZ2
         - !Ref PrivateSubnetAZ3
-      SecurityGroups:
-        - !Ref LoadBalancerSecurityGroup
       Tags:
         - Key: Name
-          Value: !Sub ${ClusterName}-alb
+          Value: !Sub ${ClusterName}-nlb
 
   # Target Groups
   APITargetGroup:
@@ -312,7 +285,10 @@ Resources:
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
-
+      HealthCheckPort: "6443"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
 
   MCSTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -323,7 +299,10 @@ Resources:
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
-
+      HealthCheckPort: "22623"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
 
   HTTPTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -334,7 +313,10 @@ Resources:
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
-
+      HealthCheckPort: "80"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
 
   HTTPSTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -345,7 +327,10 @@ Resources:
       VpcId: !Ref VPC
       TargetType: instance
       HealthCheckProtocol: TCP
-
+      HealthCheckPort: "443"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
 
   # Listeners
   APIListener:
@@ -354,7 +339,7 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref APITargetGroup
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      LoadBalancerArn: !Ref NetworkLoadBalancer
       Port: 6443
       Protocol: TCP
 
@@ -364,7 +349,7 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref MCSTargetGroup
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      LoadBalancerArn: !Ref NetworkLoadBalancer
       Port: 22623
       Protocol: TCP
 
@@ -374,7 +359,7 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref HTTPTargetGroup
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      LoadBalancerArn: !Ref NetworkLoadBalancer
       Port: 80
       Protocol: TCP
 
@@ -384,9 +369,54 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref HTTPSTargetGroup
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      LoadBalancerArn: !Ref NetworkLoadBalancer
       Port: 443
       Protocol: TCP
+
+  # Route53 Private Hosted Zone for Internal DNS
+  PrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref BaseDomain
+      VPCs:
+        - VPCId: !Ref VPC
+          VPCRegion: !Ref AWS::Region
+      HostedZoneConfig:
+        Comment: !Sub "Private hosted zone for ${ClusterName} OpenShift cluster"
+      HostedZoneTags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-private-zone
+
+  # DNS Records for OpenShift
+  APIRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PrivateHostedZone
+      Name: !Sub api.${ClusterName}.${BaseDomain}
+      Type: CNAME
+      TTL: "300"
+      ResourceRecords:
+        - !GetAtt NetworkLoadBalancer.DNSName
+
+  APIInternalRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PrivateHostedZone
+      Name: !Sub api-int.${ClusterName}.${BaseDomain}
+      Type: CNAME
+      TTL: "300"
+      ResourceRecords:
+        - !GetAtt NetworkLoadBalancer.DNSName
+
+  AppsWildcardRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PrivateHostedZone
+      Name: !Sub "*.apps.${ClusterName}.${BaseDomain}"
+      Type: CNAME
+      TTL: "300"
+      ResourceRecords:
+        - !GetAtt NetworkLoadBalancer.DNSName
 
   # Bastion Host
   BastionEIP:
@@ -402,10 +432,10 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 200
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 200
+            VolumeType: gp2
       ImageId: ami-0c02fb55956c7d316 # Amazon Linux 2 AMI (update as needed)
       InstanceType: t2.medium
       KeyName: !Ref KeyPairName
@@ -427,10 +457,10 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 200
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 200
+            VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
@@ -447,10 +477,10 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 200
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 200
+            VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
@@ -466,10 +496,10 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 200
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 200
+            VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
@@ -485,10 +515,10 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 200
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 200
+            VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
       InstanceType: t2.2xlarge
       KeyName: !Ref KeyPairName
@@ -505,16 +535,16 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 300
-          VolumeType: "gp2"
-      - DeviceName: /dev/xvdb
-        Ebs:
-          VolumeSize: 500
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 300
+            VolumeType: gp2
+        - DeviceName: /dev/xvdb
+          Ebs:
+            VolumeSize: 500
+            VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
-      InstanceType: t2.2xlarge
+      InstanceType: t2.2xlarge # Minimum for OCP base install to test need larger instance for CP4D
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ1
       SecurityGroupIds:
@@ -528,16 +558,16 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 300
-          VolumeType: "gp2"
-      - DeviceName: /dev/xvdb
-        Ebs:
-          VolumeSize: 500
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 300
+            VolumeType: gp2
+        - DeviceName: /dev/xvdb
+          Ebs:
+            VolumeSize: 500
+            VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
-      InstanceType: t2.2xlarge
+      InstanceType: t2.2xlarge # Minimum for OCP base install to test need larger instance for CP4D
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ2
       SecurityGroupIds:
@@ -551,16 +581,16 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 300
-          VolumeType: "gp2"
-      - DeviceName: /dev/xvdb
-        Ebs:
-          VolumeSize: 500
-          VolumeType: "gp2"
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 300
+            VolumeType: gp2
+        - DeviceName: /dev/xvdb
+          Ebs:
+            VolumeSize: 500
+            VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
-      InstanceType: t2.2xlarge
+      InstanceType: t2.2xlarge # Minimum for OCP base install to test need larger instance for CP4D
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetAZ3
       SecurityGroupIds:
@@ -583,26 +613,68 @@ Outputs:
     Description: Bastion Host Public IP
     Value: !Ref BastionEIP
 
-  ApplicationLoadBalancerDNS:
-    Description: Application Load Balancer DNS Name (Internal) - Single LB for all traffic
-    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  NetworkLoadBalancerDNS:
+    Description: Network Load Balancer DNS Name (Internal) - Single NLB for all TCP traffic
+    Value: !GetAtt NetworkLoadBalancer.DNSName
+
+  PrivateHostedZoneId:
+    Description: Private Hosted Zone ID for internal DNS
+    Value: !Ref PrivateHostedZone
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateHostedZone-ID
 
   ClusterAPIEndpoint:
-    Description: OpenShift API Endpoint (Internal)
-    Value: !Sub https://${ApplicationLoadBalancer.DNSName}:6443
+    Description: OpenShift API Endpoint (Internal via Route53)
+    Value: !Sub https://api.${ClusterName}.${BaseDomain}:6443
+
+  ClusterInternalAPIEndpoint:
+    Description: OpenShift Internal API Endpoint (Internal via Route53)
+    Value: !Sub https://api-int.${ClusterName}.${BaseDomain}:6443
 
   ClusterAppsWildcard:
-    Description: Apps Wildcard Domain
-    Value: !Sub '*.apps.${ClusterName}.${BaseDomain}'
+    Description: Apps Wildcard Domain (Internal via Route53)
+    Value: !Sub "*.apps.${ClusterName}.${BaseDomain}"
+
+  ClusterDomain:
+    Description: Full cluster domain
+    Value: !Sub ${ClusterName}.${BaseDomain}
+
+  # Target Group ARNs for OpenShift installer configuration
+  APITargetGroupArn:
+    Description: API Target Group ARN
+    Value: !Ref APITargetGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-API-TargetGroup
+
+  MCSTargetGroupArn:
+    Description: MCS Target Group ARN
+    Value: !Ref MCSTargetGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-MCS-TargetGroup
+
+  HTTPTargetGroupArn:
+    Description: HTTP Target Group ARN
+    Value: !Ref HTTPTargetGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-HTTP-TargetGroup
+
+  HTTPSTargetGroupArn:
+    Description: HTTPS Target Group ARN
+    Value: !Ref HTTPSTargetGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-HTTPS-TargetGroup
 
   DNSConfiguration:
-    Description: Required DNS CNAME records (internal access only)
+    Description: Internal DNS configuration via Route53
     Value: !Sub |
-      Single ALB handles all traffic. Create the following CNAME records in your DNS:
-      api.${ClusterName}.${BaseDomain} -> ${ApplicationLoadBalancer.DNSName}
-      *.apps.${ClusterName}.${BaseDomain} -> ${ApplicationLoadBalancer.DNSName}
+      Internal Route53 DNS has been configured automatically with Network Load Balancer:
+      - Private Hosted Zone: ${BaseDomain} (Zone ID: ${PrivateHostedZone})
+      - API Endpoint: api.${ClusterName}.${BaseDomain} -> ${NetworkLoadBalancer.DNSName}
+      - Internal API: api-int.${ClusterName}.${BaseDomain} -> ${NetworkLoadBalancer.DNSName}
+      - Apps Wildcard: *.apps.${ClusterName}.${BaseDomain} -> ${NetworkLoadBalancer.DNSName}
 
       Access the cluster through the bastion host at: ${BastionEIP}
-      From bastion, you can access:
+      From bastion (or any instance in the VPC), you can access:
       - OpenShift Console: https://console-openshift-console.apps.${ClusterName}.${BaseDomain}
       - API: https://api.${ClusterName}.${BaseDomain}:6443
+      - Internal API: https://api-int.${ClusterName}.${BaseDomain}:6443
