@@ -1,0 +1,613 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: OpenShift 4 cluster on existing VPC with conditional Route53 configuration
+
+Parameters:
+  # Existing Infrastructure Parameters
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID of the existing VPC where OpenShift will be deployed
+
+  PrivateSubnetAZ1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the existing private subnet in AZ1
+
+  PrivateSubnetAZ2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the existing private subnet in AZ2
+
+  PrivateSubnetAZ3Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the existing private subnet in AZ3
+
+  ExistingHostedZoneId:
+    Type: String
+    Default: ""
+    Description: (Optional) ID of existing Route53 private hosted zone. Leave empty to create new one.
+
+  # OpenShift Configuration Parameters
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair for SSH access
+
+  ClusterName:
+    Type: String
+    Default: ocp
+    Description: Name of the OpenShift cluster (will be subdomain of BaseDomain)
+    AllowedPattern: '^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$'
+    ConstraintDescription: Must be lowercase alphanumeric with hyphens
+
+  BaseDomain:
+    Type: String
+    Default: test.local
+    Description: Base domain for the cluster (e.g., test.local for internal DNS)
+
+  # Instance Configuration
+  MasterInstanceType:
+    Type: String
+    Default: m5.xlarge
+    Description: EC2 instance type for master nodes
+    AllowedValues: [t3.xlarge, m5.xlarge, m5.2xlarge, m5.4xlarge, c5.2xlarge, c5.4xlarge]
+
+  WorkerInstanceType:
+    Type: String
+    Default: m5.large
+    Description: EC2 instance type for worker nodes
+    AllowedValues: [t3.large, t3.xlarge, m5.large, m5.xlarge, m5.2xlarge, c5.large, c5.xlarge]
+
+  RHCOSAMIId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-08f1807771f4e468b
+    Description: RHCOS AMI ID for OpenShift nodes (update to latest available)
+
+Conditions:
+  CreateHostedZone: !Equals [!Ref ExistingHostedZoneId, ""]
+
+Resources:
+  # Security Groups
+  ClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for OpenShift cluster nodes
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        # OpenShift API Server
+        - IpProtocol: tcp
+          FromPort: 6443
+          ToPort: 6443
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        # Machine Config Server
+        - IpProtocol: tcp
+          FromPort: 22623
+          ToPort: 22623
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        # HTTP ingress
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        # HTTPS ingress
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        # etcd
+        - IpProtocol: tcp
+          FromPort: 2379
+          ToPort: 2380
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        # Kubelet
+        - IpProtocol: tcp
+          FromPort: 10250
+          ToPort: 10250
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        # OpenShift SDN
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9999
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        - IpProtocol: udp
+          FromPort: 9000
+          ToPort: 9999
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        # Host level services (SSH, DNS, DHCP)
+        - IpProtocol: tcp
+          FromPort: 1024
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+        - IpProtocol: udp
+          FromPort: 1024
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref ClusterSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-cluster-sg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  MasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Additional security group for OpenShift master nodes
+      VpcId: !Ref VPCId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-sg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Additional security group for OpenShift worker nodes
+      VpcId: !Ref VPCId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-sg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  BootstrapSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Additional security group for OpenShift bootstrap node
+      VpcId: !Ref VPCId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-bootstrap-sg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  # Internal Network Load Balancer
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${ClusterName}-nlb
+      Scheme: internal
+      Type: network
+      Subnets:
+        - !Ref PrivateSubnetAZ1Id
+        - !Ref PrivateSubnetAZ2Id
+        - !Ref PrivateSubnetAZ3Id
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-nlb
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  # Target Groups
+  APITargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-api-tg
+      Port: 6443
+      Protocol: TCP
+      VpcId: !Ref VPCId
+      TargetType: instance
+      HealthCheckProtocol: TCP
+      HealthCheckPort: "6443"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-api-tg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  MCSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-mcs-tg
+      Port: 22623
+      Protocol: TCP
+      VpcId: !Ref VPCId
+      TargetType: instance
+      HealthCheckProtocol: TCP
+      HealthCheckPort: "22623"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-mcs-tg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  HTTPTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-http-tg
+      Port: 80
+      Protocol: TCP
+      VpcId: !Ref VPCId
+      TargetType: instance
+      HealthCheckProtocol: TCP
+      HealthCheckPort: "80"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-http-tg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  HTTPSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${ClusterName}-https-tg
+      Port: 443
+      Protocol: TCP
+      VpcId: !Ref VPCId
+      TargetType: instance
+      HealthCheckProtocol: TCP
+      HealthCheckPort: "443"
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-https-tg
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  # Load Balancer Listeners
+  APIListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref APITargetGroup
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 6443
+      Protocol: TCP
+
+  MCSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MCSTargetGroup
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 22623
+      Protocol: TCP
+
+  HTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPTargetGroup
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 80
+      Protocol: TCP
+
+  HTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPSTargetGroup
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 443
+      Protocol: TCP
+
+  # Route53 Private Hosted Zone (conditional creation)
+  PrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Condition: CreateHostedZone
+    Properties:
+      Name: !Ref BaseDomain
+      VPCs:
+        - VPCId: !Ref VPCId
+          VPCRegion: !Ref AWS::Region
+      HostedZoneConfig:
+        Comment: !Sub "Private hosted zone for ${ClusterName} OpenShift cluster"
+      HostedZoneTags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-private-zone
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  # DNS Records for OpenShift (use existing or newly created hosted zone)
+  APIRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !If [CreateHostedZone, !Ref PrivateHostedZone, !Ref ExistingHostedZoneId]
+      Name: !Sub api.${ClusterName}.${BaseDomain}
+      Type: CNAME
+      TTL: "300"
+      ResourceRecords:
+        - !GetAtt NetworkLoadBalancer.DNSName
+
+  APIInternalRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !If [CreateHostedZone, !Ref PrivateHostedZone, !Ref ExistingHostedZoneId]
+      Name: !Sub api-int.${ClusterName}.${BaseDomain}
+      Type: CNAME
+      TTL: "300"
+      ResourceRecords:
+        - !GetAtt NetworkLoadBalancer.DNSName
+
+  AppsWildcardRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !If [CreateHostedZone, !Ref PrivateHostedZone, !Ref ExistingHostedZoneId]
+      Name: !Sub "*.apps.${ClusterName}.${BaseDomain}"
+      Type: CNAME
+      TTL: "300"
+      ResourceRecords:
+        - !GetAtt NetworkLoadBalancer.DNSName
+
+  # Bootstrap Node
+  BootstrapNode:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 120
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: !Ref RHCOSAMIId
+      InstanceType: !Ref MasterInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ1Id
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref BootstrapSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Bootstrap node will be configured by OpenShift installer
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-bootstrap
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  # Master Nodes
+  MasterNode1:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 120
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: !Ref RHCOSAMIId
+      InstanceType: !Ref MasterInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ1Id
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref MasterSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-1
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  MasterNode2:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 120
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: !Ref RHCOSAMIId
+      InstanceType: !Ref MasterInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ2Id
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref MasterSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-2
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  MasterNode3:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 120
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: !Ref RHCOSAMIId
+      InstanceType: !Ref MasterInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ3Id
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref MasterSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-master-3
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  # Worker Nodes
+  WorkerNode1:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 120
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: !Ref RHCOSAMIId
+      InstanceType: !Ref WorkerInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ1Id
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref WorkerSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-1
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  WorkerNode2:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 120
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: !Ref RHCOSAMIId
+      InstanceType: !Ref WorkerInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ2Id
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref WorkerSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-2
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  WorkerNode3:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 120
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: !Ref RHCOSAMIId
+      InstanceType: !Ref WorkerInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetAZ3Id
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+        - !Ref WorkerSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-worker-3
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  # IAM Role for EC2 instances
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess
+        - arn:aws:iam::aws:policy/AmazonRoute53FullAccess
+      RoleName: !Sub ${ClusterName}-ec2-role
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+      InstanceProfileName: !Sub ${ClusterName}-ec2-profile
+
+Outputs:
+  VPCId:
+    Description: VPC ID being used
+    Value: !Ref VPCId
+
+  NetworkLoadBalancerDNS:
+    Description: Network Load Balancer DNS Name (Internal)
+    Value: !GetAtt NetworkLoadBalancer.DNSName
+
+  HostedZoneId:
+    Description: Route53 Private Hosted Zone ID
+    Value: !If [CreateHostedZone, !Ref PrivateHostedZone, !Ref ExistingHostedZoneId]
+
+  ClusterAPIEndpoint:
+    Description: OpenShift API Endpoint
+    Value: !Sub https://api.${ClusterName}.${BaseDomain}:6443
+
+  ClusterInternalAPIEndpoint:
+    Description: OpenShift Internal API Endpoint
+    Value: !Sub https://api-int.${ClusterName}.${BaseDomain}:6443
+
+  ClusterAppsWildcard:
+    Description: Apps Wildcard Domain
+    Value: !Sub "*.apps.${ClusterName}.${BaseDomain}"
+
+  ClusterDomain:
+    Description: Full cluster domain
+    Value: !Sub ${ClusterName}.${BaseDomain}
+
+  APITargetGroupArn:
+    Description: API Target Group ARN
+    Value: !Ref APITargetGroup
+
+  MCSTargetGroupArn:
+    Description: MCS Target Group ARN
+    Value: !Ref MCSTargetGroup
+
+  HTTPTargetGroupArn:
+    Description: HTTP Target Group ARN
+    Value: !Ref HTTPTargetGroup
+
+  HTTPSTargetGroupArn:
+    Description: HTTPS Target Group ARN
+    Value: !Ref HTTPSTargetGroup
+
+  BootstrapNodeId:
+    Description: Bootstrap Node Instance ID
+    Value: !Ref BootstrapNode
+
+  MasterNodeIds:
+    Description: Master Node Instance IDs
+    Value: !Sub "${MasterNode1},${MasterNode2},${MasterNode3}"
+
+  WorkerNodeIds:
+    Description: Worker Node Instance IDs
+    Value: !Sub "${WorkerNode1},${WorkerNode2},${WorkerNode3}"
+
+  InstallationNotes:
+    Description: Next steps for OpenShift installation
+    Value: !Sub |
+      Infrastructure has been created. To complete OpenShift installation:
+      
+      1. Update your install-config.yaml with these values:
+         - API endpoint: api.${ClusterName}.${BaseDomain}
+         - Apps domain: apps.${ClusterName}.${BaseDomain}
+         - VPC ID: ${VPCId}
+         - Subnets: ${PrivateSubnetAZ1Id}, ${PrivateSubnetAZ2Id}, ${PrivateSubnetAZ3Id}
+      
+      2. Run the OpenShift installer to configure and start the cluster
+      
+      3. The installer will automatically register nodes with load balancer target groups
+      
+      4. Route53 DNS records have been configured for:
+         - api.${ClusterName}.${BaseDomain}
+         - api-int.${ClusterName}.${BaseDomain}
+         - *.apps.${ClusterName}.${BaseDomain}
