@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: OpenShift 4 cluster infrastructure on existing AWS VPC - Internal
-  Network Load Balancer with Route53 DNS
+  Network Load Balancer with Route53 DNS and Ignition Config Download
 
 Parameters:
   # Existing Infrastructure Parameters
@@ -11,7 +11,7 @@ Parameters:
   HostedZoneId:
     Type: AWS::Route53::HostedZone::Id
     Description: Existing Route53 Hosted Zone ID for the base domain
-    
+
   PrivateSubnetAZ1Id:
     Type: AWS::EC2::Subnet::Id
     Description: Existing private subnet in AZ1
@@ -34,10 +34,26 @@ Parameters:
     Type: String
     Default: test.local
     Description: Base domain for the cluster (e.g., test.local for internal DNS)
-    # Note: This could be made into a dropdown if you want to select from existing hosted zones
-    # You would need to change this to something like:
-    # Type: AWS::Route53::HostedZone::Id
-    # But that would require the hosted zone to already exist
+
+  # Ignition Configuration Parameters
+  IgnitionServerIP:
+    Type: String
+    Description: IP address of the server hosting ignition config files (e.g., 10.0.1.100)
+    AllowedPattern: ^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$
+    ConstraintDescription: Must be a valid IP address
+
+  IgnitionServerPort:
+    Type: Number
+    Default: 8080
+    Description: Port number for the ignition config server (default 8080)
+    MinValue: 1
+    MaxValue: 65535
+
+  IgnitionPath:
+    Type: String
+    Default: /ignition
+    Description: Path on the ignition server where config files are stored (default
+      /ignition)
 
 Resources:
   # OpenShift Cluster Security Group (shared by all cluster nodes)
@@ -112,7 +128,9 @@ Resources:
         - Key: Name
           Value: !Sub ${ClusterName}-nlb
 
-  # Target Groups
+
+
+# Target Groups with Targets defined
   APITargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -126,6 +144,15 @@ Resources:
       HealthCheckIntervalSeconds: 10
       HealthyThresholdCount: 3
       UnhealthyThresholdCount: 3
+      Targets:
+        - Id: !Ref BootstrapNode
+          Port: 6443
+        - Id: !Ref MasterNode1
+          Port: 6443
+        - Id: !Ref MasterNode2
+          Port: 6443
+        - Id: !Ref MasterNode3
+          Port: 6443
 
   MCSTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -140,6 +167,15 @@ Resources:
       HealthCheckIntervalSeconds: 10
       HealthyThresholdCount: 3
       UnhealthyThresholdCount: 3
+      Targets:
+        - Id: !Ref BootstrapNode
+          Port: 22623
+        - Id: !Ref MasterNode1
+          Port: 22623
+        - Id: !Ref MasterNode2
+          Port: 22623
+        - Id: !Ref MasterNode3
+          Port: 22623
 
   HTTPTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -154,6 +190,13 @@ Resources:
       HealthCheckIntervalSeconds: 10
       HealthyThresholdCount: 3
       UnhealthyThresholdCount: 3
+      Targets:
+        - Id: !Ref WorkerNode1
+          Port: 80
+        - Id: !Ref WorkerNode2
+          Port: 80
+        - Id: !Ref WorkerNode3
+          Port: 80
 
   HTTPSTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -168,6 +211,15 @@ Resources:
       HealthCheckIntervalSeconds: 10
       HealthyThresholdCount: 3
       UnhealthyThresholdCount: 3
+      Targets:
+        - Id: !Ref WorkerNode1
+          Port: 443
+        - Id: !Ref WorkerNode2
+          Port: 443
+        - Id: !Ref WorkerNode3
+          Port: 443
+
+
 
   # Listeners
   APIListener:
@@ -179,7 +231,6 @@ Resources:
       LoadBalancerArn: !Ref NetworkLoadBalancer
       Port: 6443
       Protocol: TCP
-
   MCSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -210,7 +261,7 @@ Resources:
       Port: 443
       Protocol: TCP
 
-  # Bootstrap Node (SSH key removed)
+  # Bootstrap Node with ignition config download
   BootstrapNode:
     Type: AWS::EC2::Instance
     Properties:
@@ -220,16 +271,28 @@ Resources:
             VolumeSize: 200
             VolumeType: gp2
       ImageId: ami-08f1807771f4e468b # 4.18 AMI - replace with newer RHCOS AMI if needed
-      InstanceType: t2.2xlarge
+      InstanceType: t3.2xlarge
       SubnetId: !Ref PrivateSubnetAZ1Id
       SecurityGroupIds:
         - !Ref ClusterSecurityGroup
         - !Ref BootstrapSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          {
+            "ignition": {
+              "version": "3.2.0",
+              "config": {
+                "merge": [{
+                  "source": "http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/bootstrap.ign"
+                }]
+              }
+            }
+          }
       Tags:
         - Key: Name
           Value: !Sub ${ClusterName}-bootstrap
 
-  # Master Nodes (SSH key removed)
+  # Master Nodes with ignition config download
   MasterNode1:
     Type: AWS::EC2::Instance
     Properties:
@@ -244,6 +307,18 @@ Resources:
       SecurityGroupIds:
         - !Ref ClusterSecurityGroup
         - !Ref MasterSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          {
+            "ignition": {
+              "version": "3.2.0",
+              "config": {
+                "merge": [{
+                  "source": "http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/master.ign"
+                }]
+              }
+            }
+          }
       Tags:
         - Key: Name
           Value: !Sub ${ClusterName}-master-1
@@ -262,6 +337,18 @@ Resources:
       SecurityGroupIds:
         - !Ref ClusterSecurityGroup
         - !Ref MasterSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          {
+            "ignition": {
+              "version": "3.2.0",
+              "config": {
+                "merge": [{
+                  "source": "http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/master.ign"
+                }]
+              }
+            }
+          }
       Tags:
         - Key: Name
           Value: !Sub ${ClusterName}-master-2
@@ -280,11 +367,23 @@ Resources:
       SecurityGroupIds:
         - !Ref ClusterSecurityGroup
         - !Ref MasterSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          {
+            "ignition": {
+              "version": "3.2.0",
+              "config": {
+                "merge": [{
+                  "source": "http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/master.ign"
+                }]
+              }
+            }
+          }
       Tags:
         - Key: Name
           Value: !Sub ${ClusterName}-master-3
 
-  # Worker Nodes (SSH key removed)
+  # Worker Nodes with ignition config download
   WorkerNode1:
     Type: AWS::EC2::Instance
     Properties:
@@ -303,6 +402,18 @@ Resources:
       SecurityGroupIds:
         - !Ref ClusterSecurityGroup
         - !Ref WorkerSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          {
+            "ignition": {
+              "version": "3.2.0",
+              "config": {
+                "merge": [{
+                  "source": "http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/worker.ign"
+                }]
+              }
+            }
+          }
       Tags:
         - Key: Name
           Value: !Sub ${ClusterName}-worker-1
@@ -325,6 +436,18 @@ Resources:
       SecurityGroupIds:
         - !Ref ClusterSecurityGroup
         - !Ref WorkerSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          {
+            "ignition": {
+              "version": "3.2.0",
+              "config": {
+                "merge": [{
+                  "source": "http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/worker.ign"
+                }]
+              }
+            }
+          }
       Tags:
         - Key: Name
           Value: !Sub ${ClusterName}-worker-2
@@ -347,6 +470,18 @@ Resources:
       SecurityGroupIds:
         - !Ref ClusterSecurityGroup
         - !Ref WorkerSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          {
+            "ignition": {
+              "version": "3.2.0",
+              "config": {
+                "merge": [{
+                  "source": "http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/worker.ign"
+                }]
+              }
+            }
+          }
       Tags:
         - Key: Name
           Value: !Sub ${ClusterName}-worker-3
@@ -407,6 +542,10 @@ Outputs:
     Description: Full cluster domain
     Value: !Sub ${ClusterName}.${BaseDomain}
 
+  IgnitionServer:
+    Description: Ignition server configuration
+    Value: !Sub http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/
+
   # Target Group ARNs for OpenShift installer configuration
   APITargetGroupArn:
     Description: API Target Group ARN
@@ -439,6 +578,17 @@ Outputs:
       - API Endpoint: api.${ClusterName}.${BaseDomain} -> ${NetworkLoadBalancer.DNSName}
       - Internal API: api-int.${ClusterName}.${BaseDomain} -> ${NetworkLoadBalancer.DNSName}
       - Apps Wildcard: *.apps.${ClusterName}.${BaseDomain} -> ${NetworkLoadBalancer.DNSName}
+
+      Ignition Configuration:
+      - Server: http://${IgnitionServerIP}:${IgnitionServerPort}${IgnitionPath}/
+      - Bootstrap: bootstrap.ign
+      - Master: master.ign
+      - Worker: worker.ign
+
+      Target Group Attachments:
+      - Bootstrap node registered to API and MCS target groups
+      - Master nodes registered to API and MCS target groups
+      - Worker nodes registered to HTTP and HTTPS target groups
 
       Access from within VPC:
       - OpenShift Console: https://console-openshift-console.apps.${ClusterName}.${BaseDomain}
