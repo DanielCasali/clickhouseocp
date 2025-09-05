@@ -1,0 +1,470 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC Infrastructure with private subnets and Route53 private hosted zone for OpenShift deployment
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: openshift
+    Description: Environment name that will be prefixed to resource names
+    AllowedPattern: '^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$'
+    ConstraintDescription: Must be lowercase alphanumeric with hyphens
+
+  BaseDomain:
+    Type: String
+    Default: test.local
+    Description: Base domain for the private hosted zone (e.g., test.local)
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for VPC
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.0.1.0/24
+    Description: CIDR block for public subnet (NAT Gateway and Bastion)
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  PrivateSubnetAZ1Cidr:
+    Type: String
+    Default: 10.0.10.0/24
+    Description: CIDR block for private subnet in AZ1
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  PrivateSubnetAZ2Cidr:
+    Type: String
+    Default: 10.0.20.0/24
+    Description: CIDR block for private subnet in AZ2
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  PrivateSubnetAZ3Cidr:
+    Type: String
+    Default: 10.0.30.0/24
+    Description: CIDR block for private subnet in AZ3
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair for SSH access to bastion host
+
+  CreateBastionHost:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Whether to create a bastion host for SSH access to private subnets
+
+Conditions:
+  CreateBastion: !Equals [!Ref CreateBastionHost, "true"]
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-vpc
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-igw
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet (for NAT Gateway and optional Bastion)
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-public-subnet
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Public
+
+  # Private Subnets across 3 AZs
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetAZ1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-subnet-az1
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Private
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetAZ2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-subnet-az2
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Private
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+
+  PrivateSubnetAZ3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetAZ3Cidr
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-subnet-az3
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Private
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+
+  # NAT Gateway
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-nat-eip
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-nat-gateway
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-public-rt
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-rt
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Routes
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  # Route Table Associations
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnetRouteTableAssociationAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetRouteTableAssociationAZ2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ2
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetRouteTableAssociationAZ3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ3
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Route53 Private Hosted Zone
+  PrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref BaseDomain
+      VPCs:
+        - VPCId: !Ref VPC
+          VPCRegion: !Ref AWS::Region
+      HostedZoneConfig:
+        Comment: !Sub "Private hosted zone for ${EnvironmentName} environment - ${BaseDomain}"
+      HostedZoneTags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-zone
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Domain
+          Value: !Ref BaseDomain
+
+  # Optional Bastion Host Security Group
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateBastion
+    Properties:
+      GroupDescription: Security group for bastion host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access from anywhere
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-bastion-sg
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Optional Bastion Host
+  BastionEIP:
+    Type: AWS::EC2::EIP
+    Condition: CreateBastion
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-bastion-eip
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Condition: CreateBastion
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            DeleteOnTermination: true
+      ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2 AMI (update as needed)
+      InstanceType: t3.micro
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y aws-cli
+          
+          # Install useful tools for OpenShift management
+          curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+          tar -xzf openshift-client-linux.tar.gz
+          mv oc kubectl /usr/local/bin/
+          chmod +x /usr/local/bin/oc /usr/local/bin/kubectl
+          
+          # Create a welcome message
+          cat > /etc/motd << 'EOF'
+          =====================================
+          OpenShift Bastion Host
+          =====================================
+          This bastion host provides secure access to your private OpenShift environment.
+          
+          Available tools:
+          - oc (OpenShift CLI)
+          - kubectl
+          - aws (AWS CLI)
+          
+          VPC Information:
+          - VPC ID: ${VPC}
+          - Private Domain: ${BaseDomain}
+          - Environment: ${EnvironmentName}
+          =====================================
+          EOF
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-bastion
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  BastionEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: CreateBastion
+    Properties:
+      InstanceId: !Ref BastionHost
+      EIP: !Ref BastionEIP
+
+
+
+Outputs:
+  # VPC Information
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${AWS::StackName}-VPC-ID
+
+  VPCCidr:
+    Description: VPC CIDR Block
+    Value: !Ref VpcCidr
+    Export:
+      Name: !Sub ${AWS::StackName}-VPC-CIDR
+
+  # Subnet Information
+  PublicSubnetId:
+    Description: Public Subnet ID
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub ${AWS::StackName}-PublicSubnet-ID
+
+  PrivateSubnetAZ1Id:
+    Description: Private Subnet AZ1 ID
+    Value: !Ref PrivateSubnetAZ1
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnetAZ1-ID
+
+  PrivateSubnetAZ2Id:
+    Description: Private Subnet AZ2 ID
+    Value: !Ref PrivateSubnetAZ2
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnetAZ2-ID
+
+  PrivateSubnetAZ3Id:
+    Description: Private Subnet AZ3 ID
+    Value: !Ref PrivateSubnetAZ3
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnetAZ3-ID
+
+  PrivateSubnetIds:
+    Description: Comma-separated list of private subnet IDs
+    Value: !Sub "${PrivateSubnetAZ1},${PrivateSubnetAZ2},${PrivateSubnetAZ3}"
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnets
+
+  # Availability Zones
+  AvailabilityZones:
+    Description: Availability Zones used
+    Value: !Sub "${PrivateSubnetAZ1.AvailabilityZone},${PrivateSubnetAZ2.AvailabilityZone},${PrivateSubnetAZ3.AvailabilityZone}"
+    Export:
+      Name: !Sub ${AWS::StackName}-AZs
+
+  # Route53 Information
+  PrivateHostedZoneId:
+    Description: Private Hosted Zone ID
+    Value: !Ref PrivateHostedZone
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateHostedZone-ID
+
+  BaseDomain:
+    Description: Base domain for the environment
+    Value: !Ref BaseDomain
+    Export:
+      Name: !Sub ${AWS::StackName}-BaseDomain
+
+  # Network Information
+  NATGatewayId:
+    Description: NAT Gateway ID
+    Value: !Ref NATGateway
+    Export:
+      Name: !Sub ${AWS::StackName}-NATGateway-ID
+
+  InternetGatewayId:
+    Description: Internet Gateway ID
+    Value: !Ref InternetGateway
+    Export:
+      Name: !Sub ${AWS::StackName}-IGW-ID
+
+  # Bastion Information (conditional)
+  BastionPublicIP:
+    Description: Bastion Host Public IP (if created)
+    Value: !If [CreateBastion, !Ref BastionEIP, "Not Created"]
+    Export:
+      Name: !Sub ${AWS::StackName}-Bastion-IP
+
+  BastionInstanceId:
+    Description: Bastion Host Instance ID (if created)
+    Value: !If [CreateBastion, !Ref BastionHost, "Not Created"]
+    Export:
+      Name: !Sub ${AWS::StackName}-Bastion-InstanceId
+
+  # Summary for OpenShift Deployment
+  OpenShiftDeploymentSummary:
+    Description: Summary of resources for OpenShift deployment
+    Value: !Sub |
+      VPC Infrastructure Ready for OpenShift Deployment:
+      
+      VPC Details:
+      - VPC ID: ${VPC}
+      - VPC CIDR: ${VpcCidr}
+      - Region: ${AWS::Region}
+      
+      Private Subnets (for OpenShift):
+      - AZ1: ${PrivateSubnetAZ1} (${PrivateSubnetAZ1.AvailabilityZone})
+      - AZ2: ${PrivateSubnetAZ2} (${PrivateSubnetAZ2.AvailabilityZone})
+      - AZ3: ${PrivateSubnetAZ3} (${PrivateSubnetAZ3.AvailabilityZone})
+      
+      Route53 Private Zone:
+      - Domain: ${BaseDomain}
+      - Zone ID: ${PrivateHostedZone}
+      
+      Network Access:
+      - NAT Gateway: ${NATGateway} (for outbound internet)
+      - Bastion Host: ${BastionEIP} (if created)
+      
+      Next Step: Deploy OpenShift using the companion template with these resource IDs.
